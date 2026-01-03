@@ -270,11 +270,13 @@ def get_progress_text(session_id):
 #  Основной обработчик
 
 @app.route("/", methods=["POST"])
+@app.route("/", methods=["POST"])
 def main():
     try:
         req = request.json
         if not req:
-            return jsonify_error("Пустой запрос")
+            return jsonify({"response": {"text": "Пустой запрос", "end_session": True}})
+
         command = req["request"]["command"].strip().lower()
         session = req.get("session", {})
         session_id = session.get("session_id")
@@ -282,25 +284,34 @@ def main():
         user_statistics = get_user_stats(session_id)
 
         response = {
-            "version": req["version"],
-            "session": req["session"],
+            "version": req.get("version", "1.0"),
+            "session": req.get("session", {}),
             "response": {"end_session": False, "text": "", "buttons": []},
             "session_state": {}
         }
 
         logger.info(f"Запрос: команда='{command}', session_id={session_id}")
 
-        # Обработка прогресса
+        # ---------------------- Завершить тренировку ----------------------
+        if any(end_cmd in command for end_cmd in ["завершить тренировку", "завершить", "finish"]):
+            user_sessions[session_id] = {}
+            buttons = [{"title": name} for name in sheet_names] + [{"title": "Прогресс"}]
+            response["response"][
+                "text"] = "Тренировка завершена. Вы вернулись в главное меню. Выберите тему для следующей сессии:"
+            response["response"]["buttons"] = buttons
+            return jsonify(response)
+
+        # ---------------------- Просмотр прогресса ----------------------
         if any(progress_cmd in command for progress_cmd in
                ["прогресс", "статистика", "стата", "результаты", "сколько"]):
             progress_text = get_progress_text(session_id)
             response["response"]["text"] = progress_text
             response["response"]["buttons"] = [
                 {"title": "Продолжить"},
-                {"title": "Назад в меню"}
+                {"title": "Назад в меню"},
+                {"title": "Завершить тренировку"}
             ]
             user_sessions[session_id] = {**user_state, "viewing_progress": True}
-            logger.info("Показана статистика")
             return jsonify(response)
 
         if command == "продолжить" and user_state.get("viewing_progress"):
@@ -308,7 +319,7 @@ def main():
             if user_state.get("mode") == "question" and user_state.get("question"):
                 q = user_state["question"]
                 topic = user_state["topic"]
-                options_text = "\n".join([f"{opt}" for opt in q["Варианты"]]) if q["Варианты"] else ""
+                options_text = "\n".join(q["Варианты"]) if q["Варианты"] else ""
                 if q["Изображение"]:
                     response["response"]["card"] = {
                         "type": "BigImage",
@@ -316,13 +327,14 @@ def main():
                         "title": f"Тема: {topic}",
                         "description": f"{q['Вопрос']}\n\n{options_text}"
                     }
-                    response["response"]["text"] = f"Возвращаемся к вопросу. Смотрите на картинке выше."
+                    response["response"]["text"] = "Возвращаемся к вопросу. Смотрите на картинке выше."
                 else:
                     response["response"]["text"] = f'Тема: "{topic}"\n\n{q["Вопрос"]}\n\n{options_text}'
                 response["response"]["buttons"] = [
                     {"title": "Пропустить"},
+                    {"title": "Прогресс"},
                     {"title": "Назад в меню"},
-                    {"title": "Прогресс"}
+                    {"title": "Завершить тренировку"}
                 ]
                 return jsonify(response)
             else:
@@ -331,7 +343,7 @@ def main():
                 response["response"]["buttons"] = buttons
                 return jsonify(response)
 
-        #Новая сессия
+        # ---------------------- Новая сессия ----------------------
         if session.get("new", False):
             user_sessions[session_id] = {}
             init_user_stats(session_id)
@@ -340,7 +352,7 @@ def main():
             response["response"]["buttons"] = buttons
             return jsonify(response)
 
-        #  Навигация в меню
+        # ---------------------- Навигация в меню ----------------------
         if any(nav_cmd in command for nav_cmd in ["назад", "меню", "главная", "выход"]):
             user_sessions[session_id] = {}
             buttons = [{"title": name} for name in sheet_names] + [{"title": "Прогресс"}]
@@ -348,7 +360,7 @@ def main():
             response["response"]["buttons"] = buttons
             return jsonify(response)
 
-        # Пропустить вопрос
+        # ---------------------- Пропустить вопрос ----------------------
         if any(skip_cmd in command for skip_cmd in ["пропустить", "следующий", "дальше", "skip", "next"]):
             if user_state.get("mode") == "question" and user_state.get("topic"):
                 update_user_stats(session_id, "skipped")
@@ -356,7 +368,7 @@ def main():
                 previous_questions = user_state.get("previous_questions", [])
                 next_question = get_random_question(topic, previous_questions)
                 if next_question:
-                    options_text = "\n".join([f"{opt}" for opt in next_question["Варианты"]]) if next_question["Варианты"] else ""
+                    options_text = "\n".join(next_question["Варианты"]) if next_question["Варианты"] else ""
                     if next_question["Изображение"]:
                         response["response"]["card"] = {
                             "type": "BigImage",
@@ -364,9 +376,10 @@ def main():
                             "title": f"Тема: {topic}",
                             "description": f"{next_question['Вопрос']}\n\n{options_text}"
                         }
-                        response["response"]["text"] = f"Вопрос пропущен. Смотрите картинку с вопросом выше."
+                        response["response"]["text"] = "Вопрос пропущен. Смотрите на картинке выше."
                     else:
-                        response["response"]["text"] = f"Вопрос пропущен.\n\nТема: \"{topic}\"\n\n{next_question['Вопрос']}\n\n{options_text}"
+                        response["response"][
+                            "text"] = f"Вопрос пропущен.\n\nТема: {topic}\n\n{next_question['Вопрос']}\n\n{options_text}"
                     user_sessions[session_id] = {
                         "mode": "question",
                         "topic": topic,
@@ -378,30 +391,41 @@ def main():
                     user_sessions[session_id] = {}
                 response["response"]["buttons"] = [
                     {"title": "Пропустить"},
+                    {"title": "Прогресс"},
                     {"title": "Назад в меню"},
-                    {"title": "Прогресс"}
+                    {"title": "Завершить тренировку"}
                 ]
                 return jsonify(response)
 
-        #  Помощь
+        # ---------------------- Помощь ----------------------
         if command in ["помощь", "help", "что делать", "правила"]:
             if user_state.get("mode") == "question":
-                response["response"]["text"] = f"Вы в режиме вопроса по теме '{user_state['topic']}'. Произнесите номер ответа (1-6) или букву (А-Е). Можно несколько ответов через пробел. Скажите 'пропустить' для перехода к следующему вопросу. Или скажите 'назад' для возврата в меню. Также можете посмотреть свой прогресс, сказав 'прогресс'."
+                response["response"][
+                    "text"] = f"Вы в режиме вопроса по теме '{user_state['topic']}'. Произнесите номер ответа (1-6) или букву (А-Е). Можно несколько ответов через пробел. Скажите 'пропустить' для следующего вопроса. Или 'назад' для возврата в меню. Также можно сказать 'прогресс' для статистики."
             else:
-                response["response"]["text"] = "Я помогу вам подготовиться к экзамену. Выберите тему для тестирования или скажите 'назад' в любой момент. Во время тестирования можно пропускать вопросы командой 'пропустить'. Скажите 'прогресс' чтобы увидеть свою статистику."
-            response["response"]["buttons"] = [{"title": "Назад в меню"}, {"title": "Прогресс"}]
+                response["response"][
+                    "text"] = "Я помогу вам подготовиться к экзамену. Выберите тему или скажите 'назад'. Во время тестирования можно пропускать вопросы. Скажите 'прогресс' чтобы увидеть статистику."
+            response["response"]["buttons"] = [
+                {"title": "Назад в меню"},
+                {"title": "Прогресс"},
+                {"title": "Завершить тренировку"}
+            ]
             return jsonify(response)
 
-        #Выбор темы
+        # ---------------------- Выбор темы ----------------------
         for sheet_name in sheet_names:
             if command == sheet_name.lower():
                 topic = sheet_name
                 question = get_random_question(topic)
                 if not question:
                     response["response"]["text"] = f"В теме '{topic}' нет вопросов."
-                    response["response"]["buttons"] = [{"title": "Назад в меню"}, {"title": "Прогресс"}]
+                    response["response"]["buttons"] = [
+                        {"title": "Назад в меню"},
+                        {"title": "Прогресс"},
+                        {"title": "Завершить тренировку"}
+                    ]
                     return jsonify(response)
-                options_text = "\n".join([f"{opt}" for opt in question["Варианты"]]) if question["Варианты"] else ""
+                options_text = "\n".join(question["Варианты"]) if question["Варианты"] else ""
                 if question["Изображение"]:
                     response["response"]["card"] = {
                         "type": "BigImage",
@@ -409,13 +433,14 @@ def main():
                         "title": f"Тема: {topic}",
                         "description": f"{question['Вопрос']}\n\n{options_text}"
                     }
-                    response["response"]["text"] = f"Смотрите вопрос на картинке. {question['Вопрос']}"
+                    response["response"]["text"] = f"Смотрите вопрос на картинке."
                 else:
                     response["response"]["text"] = f'Тема: "{topic}"\n\n{question["Вопрос"]}\n\n{options_text}'
                 response["response"]["buttons"] = [
                     {"title": "Пропустить"},
+                    {"title": "Прогресс"},
                     {"title": "Назад в меню"},
-                    {"title": "Прогресс"}
+                    {"title": "Завершить тренировку"}
                 ]
                 user_sessions[session_id] = {
                     "mode": "question",
@@ -426,7 +451,7 @@ def main():
                 user_statistics["current_topic"] = topic
                 return jsonify(response)
 
-        # Обработка ответа на вопрос
+        # ---------------------- Ответ на вопрос ----------------------
         if user_state.get("mode") == "question" and user_state.get("question"):
             topic = user_state["topic"]
             current_question = user_state["question"]
@@ -439,8 +464,9 @@ def main():
                 response["response"]["text"] = f"Не понял ответ '{command}'. Используйте цифры 1-6 или буквы А-Е."
                 response["response"]["buttons"] = [
                     {"title": "Пропустить"},
+                    {"title": "Прогресс"},
                     {"title": "Назад в меню"},
-                    {"title": "Прогресс"}
+                    {"title": "Завершить тренировку"}
                 ]
                 return jsonify(response)
 
@@ -465,7 +491,6 @@ def main():
                 text = f"Неверно. Правильный ответ: {correct_text}\n{current_question['Пояснение']}"
                 update_user_stats(session_id, "incorrect")
 
-            # Новый режим: answer_result
             next_question = get_random_question(topic, previous_questions)
             user_sessions[session_id] = {
                 "mode": "answer_result",
@@ -479,11 +504,12 @@ def main():
             response["response"]["buttons"] = [
                 {"title": "Дальше"},
                 {"title": "Прогресс"},
-                {"title": "Назад в меню"}
+                {"title": "Назад в меню"},
+                {"title": "Завершить тренировку"}
             ]
             return jsonify(response)
 
-        # Обработка команды "Дальше"
+        # ---------------------- Следующий вопрос после ответа ----------------------
         if command in ["дальше", "следующий", "следующий вопрос"] and user_state.get("mode") == "answer_result":
             next_question = user_state.get("next_question")
             topic = user_state.get("topic")
@@ -491,7 +517,10 @@ def main():
 
             if not next_question:
                 response["response"]["text"] = "Вопросы в этой теме закончились."
-                response["response"]["buttons"] = [{"title": "Назад в меню"}]
+                response["response"]["buttons"] = [
+                    {"title": "Назад в меню"},
+                    {"title": "Завершить тренировку"}
+                ]
                 user_sessions[session_id] = {}
                 return jsonify(response)
 
@@ -510,7 +539,8 @@ def main():
             response["response"]["buttons"] = [
                 {"title": "Пропустить"},
                 {"title": "Прогресс"},
-                {"title": "Назад в меню"}
+                {"title": "Назад в меню"},
+                {"title": "Завершить тренировку"}
             ]
             user_sessions[session_id] = {
                 "mode": "question",
@@ -520,8 +550,8 @@ def main():
             }
             return jsonify(response)
 
-        #Команда не распознана
-        buttons = [{"title": name} for name in sheet_names] + [{"title": "Прогресс"}]
+        # ---------------------- Команда не распознана ----------------------
+        buttons = [{"title": name} for name in sheet_names] + [{"title": "Прогресс"}, {"title": "Завершить тренировку"}]
         response["response"]["text"] = "Пожалуйста, выберите тему или скажите 'прогресс'."
         response["response"]["buttons"] = buttons
         return jsonify(response)
@@ -530,7 +560,8 @@ def main():
         logger.error(f"Ошибка: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return jsonify_error("Произошла ошибка. Попробуйте еще раз.")
+        return jsonify({"response": {"text": "Произошла ошибка. Попробуйте еще раз.", "end_session": True}})
+
 
 # GET для проверки
 @app.route("/", methods=["GET"])
